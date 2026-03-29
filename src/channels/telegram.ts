@@ -33,7 +33,10 @@ function markdownToTelegramHtml(text: string): string {
   result = result.replace(/^[-*_]{3,}\s*$/gm, '');
 
   // Convert markdown tables to plain text
-  result = result.replace(/^\|[\s:]*[-]+[\s:]*(\|[\s:]*[-]+[\s:]*)+\|?\s*$/gm, '');
+  result = result.replace(
+    /^\|[\s:]*[-]+[\s:]*(\|[\s:]*[-]+[\s:]*)+\|?\s*$/gm,
+    '',
+  );
   result = result.replace(/^\|(.+)\|?\s*$/gm, (_m, row) => {
     const cells = row
       .split('|')
@@ -157,6 +160,18 @@ async function sendTelegramMessage(
   }
 }
 
+/**
+ * Build a unique ISO timestamp from a Telegram message.
+ * Telegram's message.date is in whole seconds, so two messages arriving in the
+ * same second produce identical timestamps.  This breaks cursor-based pagination
+ * (`WHERE timestamp > ?`) — the second message is permanently skipped.
+ * Adding `message_id % 1000` as milliseconds makes each timestamp unique within
+ * a one-second window while preserving chronological ordering.
+ */
+function telegramTimestamp(msg: { date: number; message_id: number }): string {
+  return new Date(msg.date * 1000 + (msg.message_id % 1000)).toISOString();
+}
+
 // File extensions that should be sent as photos (with inline preview)
 const PHOTO_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
 
@@ -172,7 +187,10 @@ export class TelegramChannel implements Channel {
   // Track the last message_thread_id per chat for topic/thread support
   private threadMap = new Map<string, number>();
   // Track the last inbound message ID per chat for reaction updates
-  private lastInboundMsg = new Map<string, { chatId: number; messageId: number }>();
+  private lastInboundMsg = new Map<
+    string,
+    { chatId: number; messageId: number }
+  >();
 
   constructor(botToken: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
@@ -216,7 +234,7 @@ export class TelegramChannel implements Channel {
 
       const chatJid = `tg:${ctx.chat.id}`;
       let content = ctx.message.text;
-      const timestamp = new Date(ctx.message.date * 1000).toISOString();
+      const timestamp = telegramTimestamp(ctx.message);
 
       // Track thread/topic ID for replies
       if (ctx.message.message_thread_id) {
@@ -311,7 +329,7 @@ export class TelegramChannel implements Channel {
       const group = this.opts.registeredGroups()[chatJid];
       if (!group) return;
 
-      const timestamp = new Date(ctx.message.date * 1000).toISOString();
+      const timestamp = telegramTimestamp(ctx.message);
       const senderName =
         ctx.from?.first_name ||
         ctx.from?.username ||
@@ -358,7 +376,10 @@ export class TelegramChannel implements Channel {
           agentPath: `/workspace/group/attachments/${fileName}`,
         };
       } catch (err) {
-        logger.error({ err, fileId, fileName }, 'Telegram file download failed');
+        logger.error(
+          { err, fileId, fileName },
+          'Telegram file download failed',
+        );
         return null;
       }
     };
@@ -391,7 +412,11 @@ export class TelegramChannel implements Channel {
       const msgId = ctx.message.message_id;
       const fileName = `voice_${msgId}.ogg`;
 
-      const saved = await saveFile(chatJid, ctx.message.voice.file_id, fileName);
+      const saved = await saveFile(
+        chatJid,
+        ctx.message.voice.file_id,
+        fileName,
+      );
       if (!saved) {
         deliverMedia(ctx, chatJid, '[Voice message — download failed]');
         return;
@@ -415,27 +440,22 @@ export class TelegramChannel implements Channel {
         }
       }
 
-      deliverMedia(
-        ctx,
-        chatJid,
-        `[Voice message saved: ${saved.agentPath}]`,
-      );
+      deliverMedia(ctx, chatJid, `[Voice message saved: ${saved.agentPath}]`);
     });
 
     // Audio files
     this.bot.on('message:audio', async (ctx) => {
       const chatJid = `tg:${ctx.chat.id}`;
       const msgId = ctx.message.message_id;
-      const audioName =
-        ctx.message.audio.file_name || `audio_${msgId}.mp3`;
+      const audioName = ctx.message.audio.file_name || `audio_${msgId}.mp3`;
 
-      const saved = await saveFile(chatJid, ctx.message.audio.file_id, audioName);
+      const saved = await saveFile(
+        chatJid,
+        ctx.message.audio.file_id,
+        audioName,
+      );
       if (saved) {
-        deliverMedia(
-          ctx,
-          chatJid,
-          `[Audio saved: ${saved.agentPath}]`,
-        );
+        deliverMedia(ctx, chatJid, `[Audio saved: ${saved.agentPath}]`);
       } else {
         deliverMedia(ctx, chatJid, `[Audio: ${audioName} — download failed]`);
       }
@@ -477,10 +497,13 @@ export class TelegramChannel implements Channel {
       const chatJid = `tg:${ctx.chat.id}`;
       const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
       const msgId = ctx.message.message_id;
-      const fileName =
-        ctx.message.video.file_name || `video_${msgId}.mp4`;
+      const fileName = ctx.message.video.file_name || `video_${msgId}.mp4`;
 
-      const saved = await saveFile(chatJid, ctx.message.video.file_id, fileName);
+      const saved = await saveFile(
+        chatJid,
+        ctx.message.video.file_id,
+        fileName,
+      );
       if (saved) {
         deliverMedia(
           ctx,
@@ -504,11 +527,7 @@ export class TelegramChannel implements Channel {
         fileName,
       );
       if (saved) {
-        deliverMedia(
-          ctx,
-          chatJid,
-          `[Video note saved: ${saved.agentPath}]`,
-        );
+        deliverMedia(ctx, chatJid, `[Video note saved: ${saved.agentPath}]`);
       } else {
         deliverMedia(ctx, chatJid, '[Video note — download failed]');
       }
@@ -575,10 +594,12 @@ export class TelegramChannel implements Channel {
 
       // Extract and send any file directives ([send_file:/path/to/file])
       const files: string[] = [];
-      const cleanText = text.replace(FILE_PATTERN, (_match, filePath) => {
-        files.push(filePath.trim());
-        return '';
-      }).trim();
+      const cleanText = text
+        .replace(FILE_PATTERN, (_match, filePath) => {
+          files.push(filePath.trim());
+          return '';
+        })
+        .trim();
 
       // Send text as new message(s)
       if (cleanText) {
@@ -600,7 +621,10 @@ export class TelegramChannel implements Channel {
         this.doneReaction(inbound.chatId, inbound.messageId);
       }
 
-      logger.info({ jid, length: text.length, files: files.length }, 'Telegram message sent');
+      logger.info(
+        { jid, length: text.length, files: files.length },
+        'Telegram message sent',
+      );
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Telegram message');
     }
@@ -621,7 +645,11 @@ export class TelegramChannel implements Channel {
       return msg.message_id;
     } catch {
       // HTML failed — strip tags and send as plain text
-      const plain = html.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+      const plain = html
+        .replace(/<[^>]+>/g, '')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>');
       try {
         const msg = await this.bot.api.sendMessage(chatId, plain, opts);
         return msg.message_id;
@@ -649,7 +677,11 @@ export class TelegramChannel implements Channel {
       hostPath,
       // If it's a container path, try resolving through groups dir
       ...Object.values(this.opts.registeredGroups()).map((g) =>
-        path.join(GROUPS_DIR, g.folder, filePath.replace(/^\/workspace\/group\//, '')),
+        path.join(
+          GROUPS_DIR,
+          g.folder,
+          filePath.replace(/^\/workspace\/group\//, ''),
+        ),
       ),
     ];
 
@@ -681,14 +713,14 @@ export class TelegramChannel implements Channel {
       }
       logger.info({ chatId, file: resolvedPath }, 'Telegram file sent');
     } catch (err) {
-      logger.error({ chatId, filePath: resolvedPath, err }, 'Failed to send Telegram file');
+      logger.error(
+        { chatId, filePath: resolvedPath, err },
+        'Failed to send Telegram file',
+      );
     }
   }
 
-  private async ackReaction(
-    chatId: number,
-    messageId: number,
-  ): Promise<void> {
+  private async ackReaction(chatId: number, messageId: number): Promise<void> {
     if (!this.bot) return;
     try {
       await this.bot.api.setMessageReaction(chatId, messageId, [
@@ -700,10 +732,7 @@ export class TelegramChannel implements Channel {
     }
   }
 
-  private async doneReaction(
-    chatId: number,
-    messageId: number,
-  ): Promise<void> {
+  private async doneReaction(chatId: number, messageId: number): Promise<void> {
     if (!this.bot) return;
     try {
       await this.bot.api.setMessageReaction(chatId, messageId, [
@@ -711,6 +740,18 @@ export class TelegramChannel implements Channel {
       ]);
     } catch (err) {
       logger.debug({ chatId, err }, 'Failed to set done reaction');
+    }
+  }
+
+  getThreadHint(jid: string): number | undefined {
+    return this.threadMap.get(jid);
+  }
+
+  setThreadHint(jid: string, threadId: number | undefined): void {
+    if (threadId !== undefined) {
+      this.threadMap.set(jid, threadId);
+    } else {
+      this.threadMap.delete(jid);
     }
   }
 

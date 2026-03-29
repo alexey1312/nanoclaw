@@ -46,9 +46,11 @@ vi.mock('grammy', () => ({
 
     _msgCounter = 1000;
     api = {
-      sendMessage: vi.fn().mockImplementation(() =>
-        Promise.resolve({ message_id: ++botRef.current._msgCounter }),
-      ),
+      sendMessage: vi
+        .fn()
+        .mockImplementation(() =>
+          Promise.resolve({ message_id: ++botRef.current._msgCounter }),
+        ),
       sendChatAction: vi.fn().mockResolvedValue(undefined),
       setMessageReaction: vi.fn().mockResolvedValue(undefined),
       deleteMessage: vi.fn().mockResolvedValue(undefined),
@@ -429,19 +431,36 @@ describe('TelegramChannel', () => {
       );
     });
 
-    it('converts message.date to ISO timestamp', async () => {
+    it('converts message.date to ISO timestamp with sub-second uniqueness', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      const unixTime = 1704067200; // 2024-01-01T00:00:00.000Z
+      const unixTime = 1704067200; // 2024-01-01T00:00:00Z
+      // message_id defaults to 1, so timestamp gets +1ms offset
       const ctx = createTextCtx({ text: 'Hello', date: unixTime });
       await triggerTextMessage(ctx);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          timestamp: '2024-01-01T00:00:00.000Z',
+          timestamp: '2024-01-01T00:00:00.001Z',
+        }),
+      );
+
+      // Different message_id → different sub-second offset
+      vi.clearAllMocks();
+      const ctx2 = createTextCtx({
+        text: 'World',
+        date: unixTime,
+        messageId: 42,
+      });
+      await triggerTextMessage(ctx2);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({
+          timestamp: '2024-01-01T00:00:00.042Z',
         }),
       );
     });
